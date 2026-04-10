@@ -2372,10 +2372,14 @@ function buildExpandableDemandTableBody() {
 var _procDrillChart = null;
 
 function renderProcChart() {
-  var ctx = document.getElementById('chart-proc-main');
-  if (!ctx) return;
+  var canvas = document.getElementById('chart-proc-main');
+  if (!canvas) return;
 
-  var STAGES     = ["To be PR'd", "PR'd", "PO'd", "Delivered to FAO", "Distributed"];
+  // Destroy any existing Chart instance on this canvas
+  var existing = Chart.getChart(canvas);
+  if (existing) existing.destroy();
+
+  var STAGES     = ['To be PRed', 'PRed', 'POed', 'Delivered to FAO', 'Distributed'];
   var STAGE_KEYS = ['toBePRed','PRed','POed','deliveredToFAO','distributed'];
   var COLORS     = ['#E74C3C','#F39C12','#3498DB','#7EC8E3','#27AE60'];
   var labels     = countries.map(function(c){ return c.flag + ' ' + c.name; });
@@ -2384,13 +2388,13 @@ function renderProcChart() {
   var legendEl = document.getElementById('proc-legend-row');
   if (legendEl) {
     legendEl.innerHTML =
-      '<div style="width:100%;margin-bottom:8px;font-size:11px;color:#5A6A7A;font-style:italic;">Stages reflect the procurement lifecycle — from planning (To be PRed) through contract issuance (POed) to final delivery to beneficiaries (Distributed). Click any bar to see the commodity breakdown.</div>' +
-      STAGES.map(function(s,i) {
-        return '<div class="proc-legend-item"><div class="proc-legend-dot" style="background:' + COLORS[i] + '"></div>' + s + '</div>';
+      '<div style="width:100%;margin-bottom:8px;font-size:11px;color:#5A6A7A;font-style:italic;">Stages reflect the procurement lifecycle from planning (To be PRed) through contract issuance (POed) to final delivery to beneficiaries (Distributed). Click any country bar to see the commodity detail.</div>' +
+      STAGES.map(function(s,i){
+        return '<div class="proc-legend-item"><div class="proc-legend-dot" style="background:'+COLORS[i]+'"></div>'+s+'</div>';
       }).join('');
   }
 
-  // Absolute value datasets
+  // Build datasets with absolute USD values
   var datasets = STAGE_KEYS.map(function(key, i) {
     return {
       label: STAGES[i],
@@ -2402,37 +2406,32 @@ function renderProcChart() {
     };
   });
 
-  // Register total label plugin globally to avoid Chart.js 4 plugin issues
-  var totalLabelPluginId = 'procTotalLabel_' + Date.now();
-  var totalLabelPlugin = {
-    id: totalLabelPluginId,
-    afterDatasetsDraw: function(chart) {
-      try {
-        var ctx2 = chart.ctx;
-        var nDS = chart.data.datasets.length;
-        if (!nDS) return;
-        var lastMeta = chart.getDatasetMeta(nDS - 1);
-        chart.data.labels.forEach(function(lbl, i) {
-          var total = chart.data.datasets.reduce(function(s, ds){ return s + (ds.data[i]||0); }, 0);
-          var bar = lastMeta.data[i];
-          if (!bar || !bar.x) return;
-          ctx2.save();
-          ctx2.fillStyle = '#1C2D3E';
-          ctx2.font = 'bold 11px Segoe UI, Arial, sans-serif';
-          ctx2.textAlign = 'left';
-          ctx2.textBaseline = 'middle';
-          var lbl2 = '$' + (total >= 1000000 ? (total/1000000).toFixed(1)+'M' : total >= 1000 ? (total/1000).toFixed(0)+'K' : total);
-          ctx2.fillText(lbl2, bar.x + 6, bar.y);
-          ctx2.restore();
-        });
-      } catch(e) { /* silent */ }
+  // Inline plugin: draw total label at end of each bar
+  var totalPlugin = {
+    id: 'procTotals',
+    afterDraw: function(chart) {
+      var ctx2 = chart.ctx;
+      var meta = chart.getDatasetMeta(chart.data.datasets.length - 1);
+      chart.data.datasets[0].data.forEach(function(_, i) {
+        var total = chart.data.datasets.reduce(function(s, ds){ return s + (ds.data[i]||0); }, 0);
+        var bar = meta.data[i];
+        if (!bar) return;
+        var x = chart.scales.x.getPixelForValue(total);
+        var y = bar.y;
+        ctx2.save();
+        ctx2.fillStyle = '#333';
+        ctx2.font = 'bold 10px Arial';
+        ctx2.textAlign = 'left';
+        ctx2.textBaseline = 'middle';
+        ctx2.fillText('$'+(total>=1000000?(total/1000000).toFixed(1)+'M':(total/1000).toFixed(0)+'K'), x+5, y);
+        ctx2.restore();
+      });
     }
   };
-  Chart.register(totalLabelPlugin);
 
-  new Chart(ctx, {
+  new Chart(canvas, {
     type: 'bar',
-    plugins: [],
+    plugins: [totalPlugin],
     data: { labels: labels, datasets: datasets },
     options: {
       indexAxis: 'y',
@@ -2442,21 +2441,21 @@ function renderProcChart() {
         if (!elements || !elements.length) return;
         openProcDrilldown(elements[0].index);
       },
-      layout: { padding: { right: 80 } },
+      layout: { padding: { right: 70 } },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
             title: function(items){ return items[0].label; },
             label: function(item){
-              var v = item.raw;
-              return ' ' + item.dataset.label + ': $' + v.toLocaleString();
+              return ' ' + item.dataset.label + ': $' + item.raw.toLocaleString();
             },
             afterBody: function(items) {
-              var idx = items[0].dataIndex;
-              var c = countries[idx];
-              var total = STAGE_KEYS.reduce(function(s,k){ return s + ((c.procurement&&c.procurement.byStage&&c.procurement.byStage[k])||0); }, 0);
-              return ['─────────────────', 'Total procurement: $' + total.toLocaleString()];
+              var c = countries[items[0].dataIndex];
+              var tot = STAGE_KEYS.reduce(function(s,k){
+                return s + ((c.procurement&&c.procurement.byStage&&c.procurement.byStage[k])||0);
+              },0);
+              return ['Total: $' + tot.toLocaleString()];
             }
           }
         }
@@ -2581,19 +2580,6 @@ function renderGlobalCharts() {
     },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } },
       scales: { x: { stacked: true, ticks: { font: { size: 11 } } }, y: { stacked: true, ticks: { callback: v => v+'k', font: { size: 11 } } } }
-    }
-  });
-  // Status donut
-  const sCtx = document.getElementById('chart-global-status').getContext('2d');
-  new Chart(sCtx, {
-    type: 'doughnut',
-    data: {
-      labels: ['On Track', 'At Risk', 'Delayed'],
-      datasets: [{ data: [countries.filter(c=>c.status==='on-track').length, countries.filter(c=>c.status==='at-risk').length, countries.filter(c=>c.status==='delayed').length],
-        backgroundColor: ['#27AE60','#F39C12','#E74C3C'], borderWidth: 0 }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '65%',
-      plugins: { legend: { position: 'right', labels: { font: { size: 12 } } } }
     }
   });
 }
